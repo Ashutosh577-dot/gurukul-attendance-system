@@ -10,8 +10,28 @@ import os
 import io
 import shutil
 import qrcode
-import winsound
-import pyttsx3
+# --- STEP 1: Safe Audio Imports ---
+try:
+    import winsound
+    import pyttsx3
+    HAS_AUDIO = True
+except (ImportError, ModuleNotFoundError):
+    # This runs on the Cloud/Linux where sounds don't work
+    HAS_AUDIO = False
+
+# --- STEP 2: Update your Audio Class/Logic ---
+# Anywhere you use winsound or pyttsx3, wrap it like this:
+def play_welcome_voice(text):
+    if HAS_AUDIO:
+        try:
+            engine = pyttsx3.init()
+            engine.say(text)
+            engine.runAndWait()
+        except:
+            pass
+    else:
+        # On the cloud, we just print the message instead of speaking it
+        print(f"Audio suppressed on cloud: {text}")
 import pandas as pd
 import streamlit as st
 import plotly.express as px
@@ -705,4 +725,5 @@ def main_application():
             st.info("No attendance recorded yet.")
 
 if __name__ == "__main__":
+
     main_application()
