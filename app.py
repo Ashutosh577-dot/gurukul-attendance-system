@@ -198,113 +198,113 @@ tab1, tab2, tab3, tab4 = st.tabs([
 ])
 
 # ==========================================
-# TAB 1: REGISTRATION (CLEANER)
+# TAB 1: REGISTRATION (ENTER KEY LOGIC RESTORED)
 # ==========================================
 with tab1:
     if is_admin:
         st.header("Register New Member")
         
-        st.markdown("### Step 1: Select Category")
-        role_selection = st.radio("Choose Role:", ["Student 🎓", "Teacher 👨‍🏫", "Staff 🛠️"], horizontal=True)
-        role = role_selection.split()[0] 
-
-        st.markdown("---")
-        st.markdown(f"### Step 2: Enter Details")
-
-        # 1. COMMON FIELDS
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            name = st.text_input("Full Name")
-            gender = st.selectbox("Gender", ["Male", "Female", "Other"])
-        with c2:
-            mobile = st.text_input("Mobile Number")
-            address = st.text_area("Address", height=35)
-        with c3:
-            blood_group = st.selectbox("Blood Group", ["A+", "A-", "B+", "B-", "O+", "O-", "AB+", "AB-", "Unknown"])
-
-        # 2. SPECIFIC FIELDS
-        official_id_input = ""
-        guardian_name = ""
-        student_class = ""
-        subject = ""
-        staff_designation = ""
-
-        if role == "Student":
-            st.info("🎓 Student Details")
-            cs1, cs2, cs3 = st.columns(3)
-            official_id_input = cs1.text_input("Roll Number")
-            student_class = cs2.text_input("Class")
-            guardian_name = cs3.text_input("Guardian Name")
-            
-        elif role == "Teacher":
-            st.info("👨‍🏫 Teacher Details")
-            ct1, ct2 = st.columns(2)
-            official_id_input = ct1.text_input("Teacher ID")
-            subject = ct2.text_input("Subject")
-            
-        elif role == "Staff":
-            st.info("🛠️ Staff Details")
-            cst1, cst2 = st.columns(2)
-            official_id_input = cst1.text_input("Staff ID")
-            staff_designation = cst2.text_input("Staff Role / Designation")
-
-        st.markdown("---")
-        st.markdown("### Step 3: Face Setup")
-
+        # --- 1. CAMERA SETUP (Outside Form for interactivity) ---
+        st.markdown("### Step 1: Photo Setup")
         if 'reg_cam_on' not in st.session_state: st.session_state.reg_cam_on = False
+        
+        # Toggle Button
         if st.button("🔴 Stop Camera" if st.session_state.reg_cam_on else "📷 Start Camera", key="reg_toggle"):
             st.session_state.reg_cam_on = not st.session_state.reg_cam_on
             st.rerun()
 
+        # Camera Input
         img_file = None
         if st.session_state.reg_cam_on:
             img_file = st.camera_input("Capture Face", label_visibility="collapsed")
+            if img_file:
+                st.success("📸 Photo Captured!")
 
         st.markdown("---")
-        if st.button(f"💾 Save {role} to Cloud", type="primary", use_container_width=True):
-            if name and img_file:
-                try:
-                    face_roi, _ = detect_face(img_file)
-                    if face_roi is not None:
-                        new_sys_id = get_next_system_id()
-                        
-                        # Data Dictionary
-                        new_data = {
-                            "SystemID": new_sys_id,
-                            "Name": name,
-                            "Gender": gender,
-                            "Mobile": str(mobile),
-                            "Address": str(address),
-                            "BloodGroup": blood_group,
-                            "OfficialID": official_id_input,
-                            "LastAttendance": "Never",
-                        }
-                        
-                        # Add specific fields based on role
-                        if role == "Student":
-                            new_data["GuardianName"] = guardian_name
-                            new_data["Class"] = student_class
-                        elif role == "Teacher":
-                            new_data["Subject"] = subject
-                        elif role == "Staff":
-                            new_data["StaffDesignation"] = staff_designation
-                        
-                        success = save_to_sheet(new_data, role)
-                        
-                        if success:
-                            if os.path.exists(TRAINER_FILE): recognizer.read(TRAINER_FILE)
-                            recognizer.update([face_roi], np.array([new_sys_id]))
-                            recognizer.write(TRAINER_FILE)
-                            st.balloons()
-                            st.success(f"✅ Registered {name} (ID: {new_sys_id})")
-                            st.session_state.reg_cam_on = False
-                            st.rerun()
-                    else:
-                        st.error("⚠️ No face detected.")
-                except Exception as e:
-                    st.error(f"Error: {e}")
-            else:
-                st.warning("⚠️ Fill Name & Photo.")
+
+        # --- 2. REGISTRATION FORM (Supports 'Enter' Key to Submit) ---
+        # We use st.form so pressing 'Enter' in any text box triggers the Submit button.
+        with st.form("registration_form", clear_on_submit=True):
+            st.markdown("### Step 2: Enter Details")
+            
+            # Role Selection
+            role_selection = st.radio("Choose Role:", ["Student 🎓", "Teacher 👨‍🏫", "Staff 🛠️"], horizontal=True)
+            role = role_selection.split()[0]
+            
+            # Common Fields
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                name = st.text_input("Full Name")
+                gender = st.selectbox("Gender", ["Male", "Female", "Other"])
+            with c2:
+                mobile = st.text_input("Mobile Number")
+                address = st.text_area("Address", height=35)
+            with c3:
+                blood_group = st.selectbox("Blood Group", ["A+", "A-", "B+", "B-", "O+", "O-", "AB+", "AB-", "Unknown"])
+
+            # Specific Fields
+            st.markdown("#### Specific Details")
+            c_spec1, c_spec2, c_spec3 = st.columns(3)
+            
+            official_id_input = c_spec1.text_input("ID Number (Roll/Staff/Teacher ID)")
+            
+            # We display all potential fields, but they are optional based on logic later
+            # This allows them to exist inside the form cleanly
+            guardian_name = c_spec2.text_input("Guardian Name (Students Only)")
+            student_class = c_spec3.text_input("Class (Students Only)")
+            subject = c_spec1.text_input("Subject (Teachers Only)")
+            staff_designation = c_spec2.text_input("Designation (Staff Only)")
+
+            st.markdown("---")
+            
+            # --- THE FUNCTIONAL BUTTON ---
+            # This button works by Click OR by pressing Enter in any text box above
+            submitted = st.form_submit_button("💾 Save to Cloud (Press Enter)", type="primary", use_container_width=True)
+
+            if submitted:
+                if name and img_file:
+                    try:
+                        face_roi, _ = detect_face(img_file)
+                        if face_roi is not None:
+                            new_sys_id = get_next_system_id()
+                            
+                            # Prepare Data
+                            new_data = {
+                                "SystemID": new_sys_id,
+                                "Name": name,
+                                "Gender": gender,
+                                "Mobile": str(mobile),
+                                "Address": str(address),
+                                "BloodGroup": blood_group,
+                                "OfficialID": official_id_input,
+                                "LastAttendance": "Never",
+                            }
+                            
+                            # Filter specific fields based on selected role
+                            if role == "Student":
+                                new_data["GuardianName"] = guardian_name
+                                new_data["Class"] = student_class
+                            elif role == "Teacher":
+                                new_data["Subject"] = subject
+                            elif role == "Staff":
+                                new_data["StaffDesignation"] = staff_designation
+                            
+                            success = save_to_sheet(new_data, role)
+                            
+                            if success:
+                                if os.path.exists(TRAINER_FILE): recognizer.read(TRAINER_FILE)
+                                recognizer.update([face_roi], np.array([new_sys_id]))
+                                recognizer.write(TRAINER_FILE)
+                                st.balloons()
+                                st.success(f"✅ Registered {name} (ID: {new_sys_id})")
+                                # Note: We cannot st.rerun() inside a form callback easily, 
+                                # but clear_on_submit=True handles the reset.
+                        else:
+                            st.error("⚠️ No face detected in the photo.")
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+                else:
+                    st.warning("⚠️ Name and Photo are required.")
     else:
         st.warning("🔒 Admin Access Required")
 
