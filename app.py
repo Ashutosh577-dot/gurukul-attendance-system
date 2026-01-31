@@ -75,26 +75,83 @@ tab1, tab2, tab3 = st.tabs(["📝 Registration", "📷 Face Attendance", "📊 A
 with tab1:
     st.header("Register New Member")
     
-    # 1. Open the form
-    with st.form("reg_form", clear_on_submit=False):
-        c1, c2 = st.columns(2)
-        name = c1.text_input("Name")
-        role = c1.selectbox("Role", ["Student", "Teacher", "Staff"])
-        user_id = c2.number_input("ID Number", min_value=1, step=1)
-        
-        st.info("Take a photo to register face.")
-        img_file = st.camera_input("Register Face")
-        
-        # 2. THIS BUTTON MUST BE INDENTED INSIDE 'with st.form'
-        submit = st.form_submit_button("Save Member")
+    # 1. Input Fields (Regular Streamlit inputs, no st.form)
+    c1, c2 = st.columns(2)
+    name = c1.text_input("Full Name")
+    role = c1.selectbox("Role", ["Student", "Teacher", "Staff"])
+    user_id = c2.number_input("ID Number (Numeric Only)", min_value=1, step=1)
+    
+    st.markdown("---")
+    st.info("📷 Photo Setup")
 
-    # 3. This logic is OUTSIDE the form (Indentation moves back)
-    if submit:
-        if img_file and name:
-            # ... your saving logic here ...
-            st.success("Processing...")
+    # 2. Camera Controls (State Management)
+    # We use a specific key 'reg_camera_active' so it doesn't conflict with Tab 2
+    if 'reg_camera_active' not in st.session_state:
+        st.session_state.reg_camera_active = False
+
+    col_cam1, col_cam2 = st.columns(2)
+    
+    with col_cam1:
+        # Start/Stop Button
+        if st.button("🔴 Stop Camera" if st.session_state.reg_camera_active else "📷 Start Camera", key="reg_cam_toggle"):
+            st.session_state.reg_camera_active = not st.session_state.reg_camera_active
+            st.rerun()
+
+    with col_cam2:
+        # Switch/Reset Button
+        if st.session_state.reg_camera_active:
+            if st.button("🔄 Switch Camera", key="reg_cam_switch"):
+                st.session_state.reg_camera_active = False
+                st.rerun()
+
+    # 3. The Camera Input
+    img_file = None
+    if st.session_state.reg_camera_active:
+        img_file = st.camera_input("Take Photo", key="reg_camera", label_visibility="collapsed")
+    else:
+        st.caption("Camera is OFF. Click 'Start Camera' to begin.")
+
+    st.markdown("---")
+
+    # 4. Save Button (Acting as the form submit)
+    # We check if name + ID + image exists before allowing save
+    if st.button("💾 Save Member Registration", type="primary"):
+        if name and user_id and img_file:
+            try:
+                # Face Detection Logic
+                face_roi, _ = detect_face(img_file)
+                
+                if face_roi is not None:
+                    df = load_data()
+                    
+                    # Check for duplicate ID
+                    if user_id in df['ID'].values:
+                        st.error(f"⚠️ Error: ID {user_id} is already registered!")
+                    else:
+                        # Save Data
+                        new_entry = pd.DataFrame([{"ID": user_id, "Name": name, "Role": role, "LastAttendance": "Never"}])
+                        df = pd.concat([df, new_entry], ignore_index=True)
+                        save_data(df)
+                        
+                        # Train Model
+                        if os.path.exists(TRAINER_FILE):
+                            recognizer.read(TRAINER_FILE)
+                        
+                        recognizer.update([face_roi], np.array([user_id]))
+                        recognizer.write(TRAINER_FILE)
+                        
+                        st.balloons()
+                        st.success(f"✅ Successfully Registered: {name}")
+                        
+                        # Optional: Turn off camera after success to save resources
+                        st.session_state.reg_camera_active = False
+                        st.rerun()
+                else:
+                    st.error("⚠️ No face detected in the photo. Please try again.")
+            except Exception as e:
+                st.error(f"Error: {e}")
         else:
-            st.warning("Please enter name and take photo.")
+            st.warning("⚠️ Please fill in Name, ID, and Capture a Photo.")
             
 # --- TAB 2: ATTENDANCE ---
 with tab2:
