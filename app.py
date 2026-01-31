@@ -7,229 +7,341 @@ from datetime import datetime
 from fpdf import FPDF
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+import time
 
-# --- PAGE CONFIGURATION ---
-st.set_page_config(page_title="Gurukulam Manager", page_icon="🕉️", layout="wide")
+# Optional: Import plotting libraries for analytics (Add matplotlib/seaborn to requirements.txt)
+try:
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    PLOTTING_AVAILABLE = True
+except ImportError:
+    PLOTTING_AVAILABLE = False
 
-# --- CONFIGURATION ---
+# ======================================================
+# 1. CONFIGURATION & CONSTANTS
+# ======================================================
+st.set_page_config(
+    page_title="Gurukulam Manager Enterprise", 
+    page_icon="🕉️", 
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# File Paths
 CREDENTIALS_FILE = "credentials.json"
 SHEET_NAME = "Gurukulam_Database"
 TRAINER_FILE = "trainer.yml"
+LOGO_FILE = "logo.jpeg"
+
+# Security
 ADMIN_PASSWORD = "Gurukulam@admin"
 
-# --- INIT FACE RECOGNIZER ---
-recognizer = cv2.face.LBPHFaceRecognizer_create()
-face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+# Role Constants
+ROLE_STUDENT = "Student"
+ROLE_TEACHER = "Teacher"
+ROLE_STAFF = "Staff"
 
-# --- GOOGLE SHEETS CONNECTION ---
-def get_client():
-    scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-    creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_FILE, scope)
-    return gspread.authorize(creds)
+# Tab Names in Google Sheet
+TAB_STUDENTS = "Students"
+TAB_TEACHERS = "Teachers"
+TAB_STAFF = "Staff"
 
-# --- DATABASE FUNCTIONS ---
+# ======================================================
+# 2. ADVANCED DATABASE MANAGER CLASS
+# ======================================================
+class DatabaseManager:
+    """
+    Handles all interactions with Google Sheets.
+    Uses Singleton pattern and Caching for performance.
+    """
+    def __init__(self):
+        self.scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+        self.client = None
+        self.sheet = None
 
-def get_all_data():
-    """Fetches data and smart-injects the Role based on the sheet name."""
-    try:
-        client = get_client()
-        sh = client.open(SHEET_NAME)
-        
-        # 1. Fetch Students
-        data_s = sh.worksheet("Students").get_all_records()
-        df_s = pd.DataFrame(data_s)
-        if not df_s.empty: 
-            df_s['Role'] = 'Student' # Inject Role back for Analytics
-
-        # 2. Fetch Teachers
-        data_t = sh.worksheet("Teachers").get_all_records()
-        df_t = pd.DataFrame(data_t)
-        if not df_t.empty: 
-            df_t['Role'] = 'Teacher' # Inject Role back
-
-        # 3. Fetch Staff
-        data_st = sh.worksheet("Staff").get_all_records()
-        df_st = pd.DataFrame(data_st)
-        if not df_st.empty: 
-            df_st['Role'] = 'Staff' # Inject Role back
-        
-        # Combine all
-        df_combined = pd.concat([df_s, df_t, df_st], ignore_index=True)
-        return df_combined
-    except Exception as e:
-        return pd.DataFrame(columns=["SystemID", "Name", "Role"])
-
-def get_next_system_id():
-    """Calculates the next unique ID."""
-    df = get_all_data()
-    if df.empty or 'SystemID' not in df.columns:
-        return 1
-    
-    df['SystemID'] = pd.to_numeric(df['SystemID'], errors='coerce').fillna(0)
-    if df.empty:
-        return 1
-    return int(df['SystemID'].max()) + 1
-
-def save_to_sheet(data_dict, role_category):
-    """Saves data WITHOUT the redundant Role column."""
-    try:
-        client = get_client()
-        sh = client.open(SHEET_NAME)
-        
-        # 1. Prepare Common Data (Removed 'Role' from this list)
-        common_data = [
-            data_dict["SystemID"],
-            data_dict["Name"],
-            data_dict["Gender"],
-            str(data_dict["Mobile"]),
-            str(data_dict["Address"]),
-            data_dict["BloodGroup"],
-            data_dict["OfficialID"],
-            data_dict["LastAttendance"]
-        ]
-        
-        # 2. Append Specific Data based on Role
-        if "Student" in role_category:
-            wks = sh.worksheet("Students")
-            # Append Guardian and Class
-            row = common_data + [data_dict["GuardianName"], data_dict["Class"]]
-            
-        elif "Teacher" in role_category:
-            wks = sh.worksheet("Teachers")
-            # Append Subject Only
-            row = common_data + [data_dict["Subject"]]
-            
-        else:
-            wks = sh.worksheet("Staff")
-            # Append Designation Only
-            row = common_data + [data_dict["StaffDesignation"]]
-            
-        wks.append_row(row)
-        return True
-    except Exception as e:
-        st.error(f"Save Error: {e}")
-        return False
-
-def update_attendance_in_sheets(system_id, time_str):
-    """Updates LastAttendance column (Column 8 / 'H')."""
-    try:
-        client = get_client()
-        sh = client.open(SHEET_NAME)
-        sheets = ["Students", "Teachers", "Staff"]
-        
-        for sheet_name in sheets:
-            wks = sh.worksheet(sheet_name)
+    def connect(self):
+        """Authenticates with Google Cloud."""
+        if self.client is None:
             try:
+                creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_FILE, self.scope)
+                self.client = gspread.authorize(creds)
+                self.sheet = self.client.open(SHEET_NAME)
+                return True
+            except Exception as e:
+                st.error(f"🔥 Database Connection Error: {e}")
+                return False
+        return True
+
+    def get_worksheet(self, role):
+        """Returns the specific worksheet object based on role."""
+        self.connect()
+        try:
+            if role == ROLE_STUDENT:
+                return self.sheet.worksheet(TAB_STUDENTS)
+            elif role == ROLE_TEACHER:
+                return self.sheet.worksheet(TAB_TEACHERS)
+            elif role == ROLE_STAFF:
+                return self.sheet.worksheet(TAB_STAFF)
+        except gspread.WorksheetNotFound:
+            st.error(f"Tab for {role} not found in Google Sheet.")
+            return None
+
+    def fetch_all_data(self):
+        """Fetches data from ALL tabs and merges them with Role injection."""
+        self.connect()
+        try:
+            # 1. Fetch Students
+            d_s = self.sheet.worksheet(TAB_STUDENTS).get_all_records()
+            df_s = pd.DataFrame(d_s)
+            if not df_s.empty: df_s['Role'] = ROLE_STUDENT
+
+            # 2. Fetch Teachers
+            d_t = self.sheet.worksheet(TAB_TEACHERS).get_all_records()
+            df_t = pd.DataFrame(d_t)
+            if not df_t.empty: df_t['Role'] = ROLE_TEACHER
+
+            # 3. Fetch Staff
+            d_st = self.sheet.worksheet(TAB_STAFF).get_all_records()
+            df_st = pd.DataFrame(d_st)
+            if not df_st.empty: df_st['Role'] = ROLE_STAFF
+
+            # Combine
+            return pd.concat([df_s, df_t, df_st], ignore_index=True)
+        except Exception as e:
+            # Return empty frame structure if DB is empty or fails
+            return pd.DataFrame(columns=["SystemID", "Name", "Role"])
+
+    def generate_system_id(self):
+        """Calculates the next unique System ID."""
+        df = self.fetch_all_data()
+        if df.empty or 'SystemID' not in df.columns:
+            return 1001 # Start at 1001 for professional look
+        
+        # Ensure numeric
+        df['SystemID'] = pd.to_numeric(df['SystemID'], errors='coerce').fillna(0)
+        return int(df['SystemID'].max()) + 1
+
+    def save_record(self, role, data_dict):
+        """Saves data to the specific sheet based on Role."""
+        try:
+            wks = self.get_worksheet(role)
+            if not wks: return False
+            
+            # Common Data Structure
+            row_data = [
+                data_dict["SystemID"],
+                data_dict["Name"],
+                data_dict["Gender"],
+                str(data_dict["Mobile"]),
+                str(data_dict["Address"]),
+                data_dict["BloodGroup"],
+                data_dict["OfficialID"],
+                data_dict["LastAttendance"]
+            ]
+            
+            # Append Specifics
+            if role == ROLE_STUDENT:
+                row_data.extend([data_dict.get("GuardianName", ""), data_dict.get("Class", "")])
+            elif role == ROLE_TEACHER:
+                row_data.extend([data_dict.get("Subject", "")])
+            elif role == ROLE_STAFF:
+                row_data.extend([data_dict.get("StaffDesignation", "")])
+            
+            wks.append_row(row_data)
+            return True
+        except Exception as e:
+            st.error(f"Save Failed: {e}")
+            return False
+
+    def mark_attendance(self, system_id, timestamp):
+        """Updates LastAttendance for the ID across all sheets."""
+        self.connect()
+        tabs = [TAB_STUDENTS, TAB_TEACHERS, TAB_STAFF]
+        for tab in tabs:
+            try:
+                wks = self.sheet.worksheet(tab)
                 cell = wks.find(str(system_id))
                 if cell:
-                    # 'LastAttendance' is now Column 8 because Role was removed
-                    wks.update_cell(cell.row, 8, time_str)
+                    # Column 8 is LastAttendance
+                    wks.update_cell(cell.row, 8, timestamp)
                     return True
             except gspread.exceptions.CellNotFound:
                 continue
         return False
-    except Exception as e:
-        st.error(f"Attendance Update Error: {e}")
-        return False
 
-def delete_from_sheets(system_id):
-    try:
-        client = get_client()
-        sh = client.open(SHEET_NAME)
-        sheets = ["Students", "Teachers", "Staff"]
-        
-        for sheet_name in sheets:
-            wks = sh.worksheet(sheet_name)
+    def delete_record(self, system_id):
+        """Deletes a record permanently."""
+        self.connect()
+        tabs = [TAB_STUDENTS, TAB_TEACHERS, TAB_STAFF]
+        for tab in tabs:
             try:
+                wks = self.sheet.worksheet(tab)
                 cell = wks.find(str(system_id))
                 if cell:
                     wks.delete_rows(cell.row)
                     return True
-            except gspread.exceptions.CellNotFound:
+            except:
                 continue
         return False
-    except Exception as e:
-        st.error(f"Delete Error: {e}")
-        return False
 
-def detect_face(image_buffer):
-    file_bytes = np.asarray(bytearray(image_buffer.read()), dtype=np.uint8)
-    img = cv2.imdecode(file_bytes, 1)
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    gray = cv2.equalizeHist(gray)
-    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=3, minSize=(30, 30))
-    if len(faces) > 0:
-        biggest_face = max(faces, key=lambda rect: rect[2] * rect[3])
-        (x, y, w, h) = biggest_face
-        return gray[y:y+h, x:x+w], img
-    return None, img
+# ======================================================
+# 3. FACE DETECTION ENGINE
+# ======================================================
+class FaceEngine:
+    def __init__(self):
+        self.cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        self.recognizer = cv2.face.LBPHFaceRecognizer_create()
+        if os.path.exists(TRAINER_FILE):
+            self.recognizer.read(TRAINER_FILE)
 
-# --- STYLING ---
+    def detect(self, image_buffer):
+        """Optimized detection for mobile/webcam."""
+        try:
+            file_bytes = np.asarray(bytearray(image_buffer.read()), dtype=np.uint8)
+            img = cv2.imdecode(file_bytes, 1)
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            gray = cv2.equalizeHist(gray) # Improve lighting
+            
+            faces = self.cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=3, minSize=(30, 30))
+            
+            if len(faces) > 0:
+                biggest = max(faces, key=lambda rect: rect[2] * rect[3])
+                (x, y, w, h) = biggest
+                return gray[y:y+h, x:x+w], img
+            return None, img
+        except Exception as e:
+            st.error(f"CV Error: {e}")
+            return None, None
+
+    def train(self, face_roi, label_id):
+        """Updates the LBPH model."""
+        try:
+            if os.path.exists(TRAINER_FILE):
+                self.recognizer.read(TRAINER_FILE)
+            self.recognizer.update([face_roi], np.array([label_id]))
+            self.recognizer.write(TRAINER_FILE)
+            return True
+        except Exception as e:
+            st.error(f"Training Error: {e}")
+            return False
+
+# ======================================================
+# 4. ADVANCED REPORT GENERATOR
+# ======================================================
+class ReportGenerator(FPDF):
+    """Custom PDF Generator with Headers, Footers, and Dynamic Titles."""
+    def __init__(self, title="Report"):
+        super().__init__()
+        self.report_title = title
+
+    def header(self):
+        if os.path.exists(LOGO_FILE):
+            self.image(LOGO_FILE, x=10, y=8, w=25)
+        
+        self.set_font('Arial', 'B', 15)
+        self.set_text_color(139, 0, 0) # Dark Red
+        self.cell(80) # Move right
+        self.cell(30, 10, 'Shri Hulas Bramh Baba Sanskrit Ved Gurukulam', 0, 0, 'C')
+        self.ln(20)
+        
+        self.set_font('Arial', 'I', 12)
+        self.set_text_color(0, 0, 0)
+        self.cell(0, 10, f"{self.report_title} - {datetime.now().strftime('%d-%b-%Y')}", 0, 1, 'C')
+        self.ln(10)
+        
+        # Table Header
+        self.set_fill_color(220, 220, 220)
+        self.set_font('Arial', 'B', 10)
+        self.cell(40, 10, 'Name', 1, 0, 'C', True)
+        self.cell(30, 10, 'Role', 1, 0, 'C', True)
+        self.cell(30, 10, 'ID', 1, 0, 'C', True)
+        self.cell(50, 10, 'Last Seen', 1, 1, 'C', True)
+
+    def footer(self):
+        self.set_y(-15)
+        self.set_font('Arial', 'I', 8)
+        self.cell(0, 10, f'Page {self.page_no()}', 0, 0, 'C')
+
+    def add_row(self, row):
+        self.set_font('Arial', '', 10)
+        name = str(row.get('Name', ''))[:20]
+        role = str(row.get('Role', ''))
+        sys_id = str(row.get('SystemID', ''))
+        last_att = str(row.get('LastAttendance', ''))
+        
+        self.cell(40, 10, name, 1)
+        self.cell(30, 10, role, 1)
+        self.cell(30, 10, sys_id, 1)
+        self.cell(50, 10, last_att, 1)
+        self.ln()
+
+# ======================================================
+# 5. UI COMPONENTS
+# ======================================================
+
+# --- Init Logic ---
+db = DatabaseManager()
+face_engine = FaceEngine()
+
+# --- CSS Styling ---
 st.markdown("""
     <style>
     .stApp { background-color: #FFF8E1; }
-    section[data-testid="stSidebar"] { background-color: #FF9933; color: white; }
-    h1, h2, h3 { color: #8B0000; font-family: serif; }
-    .stButton>button { background-color: #8B0000; color: white; border: 2px solid #5D4037; }
-    div[data-testid="stCameraInput"] { border: 2px solid #8B0000; border-radius: 10px; }
+    section[data-testid="stSidebar"] { background-color: #FF9933; }
+    h1, h2, h3 { color: #8B0000; font-family: 'Georgia', serif; }
+    .stButton>button { background-color: #8B0000; color: white; border-radius: 5px; }
+    div[data-testid="stMetricValue"] { color: #8B0000; }
     </style>
 """, unsafe_allow_html=True)
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.markdown("## 🕉️")
-    st.markdown("### Gurukulam Manager")
-    st.caption("Database: Smart-Split Sheets ☁️")
+    st.markdown("## 🕉️ Gurukulam Admin")
+    if os.path.exists(LOGO_FILE): st.image(LOGO_FILE, width=100)
     st.markdown("---")
     
-    st.markdown("### 🔐 Admin Login")
-    input_pass = st.text_input("Enter Password", type="password", key="sidebar_pass")
-    is_admin = input_pass == ADMIN_PASSWORD
-    if is_admin: st.success("✅ Access Granted")
-
-# --- MAIN APP ---
-st.title("🕉️ Gurukulam Upasthiti System")
-
-tab1, tab2, tab3, tab4 = st.tabs([
-    "📝 Registration (Admin)", 
-    "📷 Face Attendance", 
-    "📊 Analytics", 
-    "🗑️ Manage Database"
-])
-
-# ==========================================
-# TAB 1: REGISTRATION (ENTER KEY LOGIC RESTORED)
-# ==========================================
-with tab1:
+    password = st.text_input("🔐 Admin Access", type="password")
+    is_admin = password == ADMIN_PASSWORD
+    
     if is_admin:
-        st.header("Register New Member")
+        st.success("Authenticated")
+        st.caption("System Status: Online 🟢")
+    else:
+        st.warning("Locked 🔒")
+
+# --- MAIN TABS ---
+t1, t2, t3, t4 = st.tabs(["📝 Register", "📷 Attendance", "📊 Analytics & Reports", "⚙️ Database"])
+
+# ------------------------------------------------------
+# TAB 1: REGISTRATION (Dynamic & Form-Based)
+# ------------------------------------------------------
+with t1:
+    if is_admin:
+        st.header("New Member Registration")
         
-        # --- 1. CAMERA SETUP (Outside Form for interactivity) ---
-        st.markdown("### Step 1: Photo Setup")
-        if 'reg_cam_on' not in st.session_state: st.session_state.reg_cam_on = False
+        # 1. Camera Section (Interactive)
+        st.markdown("### 1. Biometric Capture")
+        if 'cam_active' not in st.session_state: st.session_state.cam_active = False
         
-        # Toggle Button
-        if st.button("🔴 Stop Camera" if st.session_state.reg_cam_on else "📷 Start Camera", key="reg_toggle"):
-            st.session_state.reg_cam_on = not st.session_state.reg_cam_on
+        if st.button("🔴 Stop Camera" if st.session_state.cam_active else "📷 Start Camera", key="reg_cam_btn"):
+            st.session_state.cam_active = not st.session_state.cam_active
             st.rerun()
-
-        # Camera Input
-        img_file = None
-        if st.session_state.reg_cam_on:
-            img_file = st.camera_input("Capture Face", label_visibility="collapsed")
-            if img_file:
-                st.success("📸 Photo Captured!")
-
-        st.markdown("---")
-
-        # --- 2. REGISTRATION FORM (Supports 'Enter' Key to Submit) ---
-        # We use st.form so pressing 'Enter' in any text box triggers the Submit button.
-        with st.form("registration_form", clear_on_submit=True):
-            st.markdown("### Step 2: Enter Details")
             
-            # Role Selection
-            role_selection = st.radio("Choose Role:", ["Student 🎓", "Teacher 👨‍🏫", "Staff 🛠️"], horizontal=True)
-            role = role_selection.split()[0]
+        img_buffer = None
+        if st.session_state.cam_active:
+            img_buffer = st.camera_input("Face Scanner", label_visibility="collapsed")
+            if img_buffer: st.success("📸 Image Acquired!")
+
+        st.divider()
+
+        # 2. Details Section (Dynamic Form)
+        st.markdown("### 2. Member Details")
+        
+        # Role Selector determines form fields
+        role_type = st.radio("Select Category:", [ROLE_STUDENT, ROLE_TEACHER, ROLE_STAFF], horizontal=True)
+        
+        with st.form("main_reg_form", clear_on_submit=True):
+            st.caption(f"Registering New {role_type}")
             
             # Common Fields
             c1, c2, c3 = st.columns(3)
@@ -240,197 +352,209 @@ with tab1:
                 mobile = st.text_input("Mobile Number")
                 address = st.text_area("Address", height=35)
             with c3:
-                blood_group = st.selectbox("Blood Group", ["A+", "A-", "B+", "B-", "O+", "O-", "AB+", "AB-", "Unknown"])
+                blood = st.selectbox("Blood Group", ["A+", "A-", "B+", "B-", "O+", "O-", "Unknown"])
 
             # Specific Fields
-            st.markdown("#### Specific Details")
-            c_spec1, c_spec2, c_spec3 = st.columns(3)
+            spec1, spec2, spec3 = st.columns(3)
             
-            official_id_input = c_spec1.text_input("ID Number (Roll/Staff/Teacher ID)")
-            
-            # We display all potential fields, but they are optional based on logic later
-            # This allows them to exist inside the form cleanly
-            guardian_name = c_spec2.text_input("Guardian Name (Students Only)")
-            student_class = c_spec3.text_input("Class (Students Only)")
-            subject = c_spec1.text_input("Subject (Teachers Only)")
-            staff_designation = c_spec2.text_input("Designation (Staff Only)")
+            # Initialize Vars
+            off_id = ""
+            guard = ""
+            cls = ""
+            subj = ""
+            desig = ""
 
+            if role_type == ROLE_STUDENT:
+                off_id = spec1.text_input("Roll Number")
+                cls = spec2.text_input("Class / Standard")
+                guard = spec3.text_input("Guardian Name")
+            elif role_type == ROLE_TEACHER:
+                off_id = spec1.text_input("Teacher ID")
+                subj = spec2.text_input("Subject")
+            elif role_type == ROLE_STAFF:
+                off_id = spec1.text_input("Staff ID")
+                desig = spec2.text_input("Designation")
+            
             st.markdown("---")
+            submitted = st.form_submit_button("💾 Save to Cloud (Press Enter)", type="primary")
             
-            # --- THE FUNCTIONAL BUTTON ---
-            # This button works by Click OR by pressing Enter in any text box above
-            submitted = st.form_submit_button("💾 Save to Cloud (Press Enter)", type="primary", use_container_width=True)
-
             if submitted:
-                if name and img_file:
-                    try:
-                        face_roi, _ = detect_face(img_file)
-                        if face_roi is not None:
-                            new_sys_id = get_next_system_id()
+                if name and img_buffer:
+                    with st.spinner("Processing..."):
+                        # Detect Face
+                        roi, _ = face_engine.detect(img_buffer)
+                        
+                        if roi is not None:
+                            # Generate ID
+                            sys_id = db.generate_system_id()
                             
-                            # Prepare Data
-                            new_data = {
-                                "SystemID": new_sys_id,
-                                "Name": name,
-                                "Gender": gender,
-                                "Mobile": str(mobile),
-                                "Address": str(address),
-                                "BloodGroup": blood_group,
-                                "OfficialID": official_id_input,
-                                "LastAttendance": "Never",
+                            # Prepare Data Payload
+                            data = {
+                                "SystemID": sys_id, "Name": name, "Gender": gender,
+                                "Mobile": mobile, "Address": address, "BloodGroup": blood,
+                                "OfficialID": off_id, "LastAttendance": "Never"
                             }
                             
-                            # Filter specific fields based on selected role
-                            if role == "Student":
-                                new_data["GuardianName"] = guardian_name
-                                new_data["Class"] = student_class
-                            elif role == "Teacher":
-                                new_data["Subject"] = subject
-                            elif role == "Staff":
-                                new_data["StaffDesignation"] = staff_designation
+                            # Add Extras
+                            if role_type == ROLE_STUDENT:
+                                data.update({"GuardianName": guard, "Class": cls})
+                            elif role_type == ROLE_TEACHER:
+                                data.update({"Subject": subj})
+                            elif role_type == ROLE_STAFF:
+                                data.update({"StaffDesignation": desig})
                             
-                            success = save_to_sheet(new_data, role)
-                            
-                            if success:
-                                if os.path.exists(TRAINER_FILE): recognizer.read(TRAINER_FILE)
-                                recognizer.update([face_roi], np.array([new_sys_id]))
-                                recognizer.write(TRAINER_FILE)
+                            # Save
+                            if db.save_record(role_type, data):
+                                face_engine.train(roi, sys_id)
                                 st.balloons()
-                                st.success(f"✅ Registered {name} (ID: {new_sys_id})")
-                                # Note: We cannot st.rerun() inside a form callback easily, 
-                                # but clear_on_submit=True handles the reset.
+                                st.success(f"✅ Registered {name} (ID: {sys_id})")
+                            else:
+                                st.error("Database Save Failed")
                         else:
-                            st.error("⚠️ No face detected in the photo.")
-                    except Exception as e:
-                        st.error(f"Error: {e}")
+                            st.error("Face not detected clearly. Try again.")
                 else:
                     st.warning("⚠️ Name and Photo are required.")
     else:
-        st.warning("🔒 Admin Access Required")
+        st.info("Please login to register members.")
 
-# ==========================================
+# ------------------------------------------------------
 # TAB 2: ATTENDANCE
-# ==========================================
-with tab2:
-    st.header("Mark Attendance")
-    if 'att_cam_on' not in st.session_state: st.session_state.att_cam_on = False
-
-    if st.button("🔴 Stop Camera" if st.session_state.att_cam_on else "📷 Start Camera", key="att_toggle"):
-        st.session_state.att_cam_on = not st.session_state.att_cam_on
+# ------------------------------------------------------
+with t2:
+    st.header("Daily Attendance")
+    
+    if 'att_active' not in st.session_state: st.session_state.att_active = False
+    
+    if st.button("🔴 Stop Scanner" if st.session_state.att_active else "📷 Start Scanner", key="att_btn"):
+        st.session_state.att_active = not st.session_state.att_active
         st.rerun()
-
-    if st.session_state.att_cam_on:
-        attendance_cam = st.camera_input("Scan Face", key="att_cam", label_visibility="collapsed")
-        if attendance_cam:
-            if os.path.exists(TRAINER_FILE):
-                try:
-                    recognizer.read(TRAINER_FILE)
-                    face_roi, _ = detect_face(attendance_cam)
-                    if face_roi is not None:
-                        id_predicted, confidence = recognizer.predict(face_roi)
-                        if confidence < 75:
-                            time_now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            success = update_attendance_in_sheets(id_predicted, time_now)
-                            if success:
-                                st.success(f"✅ Attendance Marked! (ID: {id_predicted})")
+        
+    if st.session_state.att_active:
+        att_buf = st.camera_input("Scanner", label_visibility="collapsed")
+        
+        if att_buf:
+            roi, _ = face_engine.detect(att_buf)
+            if roi is not None:
+                if hasattr(face_engine.recognizer, 'predict'):
+                    try:
+                        id_pred, conf = face_engine.recognizer.predict(roi)
+                        
+                        # Confidence < 75 is a match
+                        if conf < 75:
+                            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            if db.mark_attendance(id_pred, ts):
+                                st.success(f"✅ Attendance Marked (ID: {id_pred})")
                                 st.balloons()
                             else:
-                                st.error("ID recognized but not found in Google Sheet.")
+                                st.warning("ID recognized but not in Database.")
                         else:
-                            st.error("❌ Face not matched.")
-                    else:
-                        st.warning("⚠️ No face detected.")
-                except Exception as e:
-                    st.error(f"Error: {e}")
+                            st.error("❌ Face not matched")
+                    except:
+                        st.warning("Model not trained yet.")
             else:
-                st.error("⚠️ Database Empty.")
+                st.warning("No face detected.")
 
-# ==========================================
-# TAB 3: ANALYTICS
-# ==========================================
-with tab3:
-    st.header("Gurukulam Analytics")
+# ------------------------------------------------------
+# TAB 3: ANALYTICS (Advanced & Visual)
+# ------------------------------------------------------
+with t3:
+    st.header("Reports & Analytics")
     if st.button("🔄 Refresh Data"): st.rerun()
-        
-    df = get_all_data()
+    
+    df = db.fetch_all_data()
     
     if not df.empty:
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Total", len(df))
-        c2.metric("Students", len(df[df['Role'] == 'Student']))
-        c3.metric("Teachers", len(df[df['Role'] == 'Teacher']))
-        c4.metric("Staff", len(df[df['Role'] == 'Staff']))
+        # Filter Logic
+        view_filter = st.selectbox("Select View:", ["All Members", ROLE_STUDENT, ROLE_TEACHER, ROLE_STAFF])
         
-        # Display data
-        st.dataframe(df)
-        
-        def create_pdf(dataframe):
-            class PDF(FPDF):
-                def header(self):
-                    if os.path.exists("logo.jpeg"):
-                        self.image("logo.jpeg", x=90, y=10, w=30)
-                        self.ln(35)
-                    else:
-                        self.ln(10)
-                    self.set_fill_color(200, 0, 0)
-                    self.set_text_color(255, 255, 255)
-                    self.set_font('Arial', 'B', 14)
-                    self.cell(0, 15, 'Shri Hulas Bramh Baba Sanskrit Ved Gurukulam', 0, 1, 'C', True)
-                    self.ln(10)
-                    self.set_text_color(0, 0, 0)
-                    self.set_font('Arial', 'B', 10)
-                    # Headers
-                    self.cell(40, 10, 'Name', 1)
-                    self.cell(20, 10, 'Role', 1)
-                    self.cell(30, 10, 'Official ID', 1)
-                    self.cell(40, 10, 'Last Attendance', 1)
-                    self.ln()
+        if view_filter != "All Members":
+            view_df = df[df['Role'] == view_filter]
+        else:
+            view_df = df
             
-            pdf = PDF()
-            pdf.add_page()
-            pdf.set_font('Arial', '', 10)
-            for _, row in dataframe.iterrows():
-                # Safety check
-                name = str(row.get('Name', ''))[:20]
-                role = str(row.get('Role', ''))
-                off_id = str(row.get('OfficialID', ''))
-                last_att = str(row.get('LastAttendance', ''))
-                
-                pdf.cell(40, 10, name, 1)
-                pdf.cell(20, 10, role, 1)
-                pdf.cell(30, 10, off_id, 1)
-                pdf.cell(40, 10, last_att, 1)
-                pdf.ln()
-            return pdf.output(dest='S').encode('latin-1')
-
-        if st.button("📄 Generate PDF Report"):
+        # 1. Metrics
+        m1, m2 = st.columns(2)
+        m1.metric(f"Total {view_filter}", len(view_df))
+        
+        # Active Today logic
+        today_str = datetime.now().strftime('%Y-%m-%d')
+        active_count = len(view_df[view_df['LastAttendance'].str.contains(today_str, na=False)])
+        m2.metric("Present Today", active_count)
+        
+        # 2. Visuals (Charts)
+        if PLOTTING_AVAILABLE:
+            st.subheader("Demographics")
+            c1, c2 = st.columns(2)
+            with c1:
+                # Role Distribution
+                if view_filter == "All Members":
+                    fig1, ax1 = plt.subplots(figsize=(5,3))
+                    view_df['Role'].value_counts().plot.pie(autopct='%1.1f%%', ax=ax1, colors=sns.color_palette('pastel'))
+                    ax1.set_ylabel('')
+                    ax1.set_title("Role Distribution")
+                    st.pyplot(fig1)
+            with c2:
+                # Gender Distribution
+                fig2, ax2 = plt.subplots(figsize=(5,3))
+                sns.countplot(data=view_df, x='Gender', palette="Set2", ax=ax2)
+                ax2.set_title("Gender Split")
+                st.pyplot(fig2)
+        
+        # 3. Data Table
+        st.subheader("Detailed Records")
+        st.dataframe(view_df, use_container_width=True)
+        
+        # 4. Downloads
+        d1, d2 = st.columns(2)
+        
+        # CSV
+        csv = view_df.to_csv(index=False).encode('utf-8')
+        d1.download_button(f"📥 Download {view_filter} CSV", data=csv, file_name=f"{view_filter}_Data.csv", mime="text/csv")
+        
+        # PDF
+        if d2.button(f"📄 Generate {view_filter} PDF Report"):
             try:
-                pdf_bytes = create_pdf(df)
-                st.download_button("Download PDF", data=pdf_bytes, file_name="Gurukulam_Report.pdf", mime="application/pdf")
+                pdf = ReportGenerator(title=f"{view_filter} Attendance Report")
+                pdf.add_page()
+                for _, row in view_df.iterrows():
+                    pdf.add_row(row)
+                
+                pdf_bytes = pdf.output(dest='S').encode('latin-1')
+                st.download_button(
+                    label="⬇️ Click to Download PDF",
+                    data=pdf_bytes,
+                    file_name=f"{view_filter}_Report.pdf",
+                    mime="application/pdf"
+                )
             except Exception as e:
                 st.error(f"PDF Error: {e}")
     else:
-        st.info("Cloud Database is empty.")
+        st.info("Database is empty.")
 
-# ==========================================
-# TAB 4: DATABASE MANAGER
-# ==========================================
-with tab4:
+# ------------------------------------------------------
+# TAB 4: MANAGER
+# ------------------------------------------------------
+with t4:
     if is_admin:
-        st.header("🗑️ Manage Cloud Database")
-        df = get_all_data()
+        st.header("Database Maintenance")
+        df = db.fetch_all_data()
+        
         if not df.empty:
-            st.dataframe(df[['SystemID', 'Name', 'Role', 'OfficialID']])
-            id_to_delete = st.selectbox("Select System ID to Delete", df['SystemID'].tolist())
+            st.warning("⚠️ Deleting a record is permanent.")
             
-            if st.button("❌ Delete from Google Sheet"):
-                success = delete_from_sheets(id_to_delete)
-                if success:
-                    st.success(f"Deleted ID {id_to_delete} from Cloud.")
+            # Smart Selector
+            options = df.apply(lambda x: f"{x['SystemID']} - {x['Name']} ({x['Role']})", axis=1)
+            selected = st.selectbox("Select Record to Delete", options)
+            
+            if st.button("❌ Delete Permanently"):
+                sys_id = selected.split(" - ")[0]
+                if db.delete_record(sys_id):
+                    st.success(f"ID {sys_id} Deleted.")
+                    time.sleep(1)
                     st.rerun()
                 else:
-                    st.error("Failed to delete.")
+                    st.error("Delete failed.")
         else:
-            st.info("Nothing to delete.")
+            st.info("No records to manage.")
     else:
         st.warning("🔒 Admin Access Required")
