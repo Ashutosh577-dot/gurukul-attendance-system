@@ -75,83 +75,131 @@ tab1, tab2, tab3 = st.tabs(["📝 Registration", "📷 Face Attendance", "📊 A
 with tab1:
     st.header("Register New Member")
     
-    # 1. Input Fields (Regular Streamlit inputs, no st.form)
-    c1, c2 = st.columns(2)
-    name = c1.text_input("Full Name")
-    role = c1.selectbox("Role", ["Student", "Teacher", "Staff"])
-    user_id = c2.number_input("ID Number (Numeric Only)", min_value=1, step=1)
+    # 1. Role Selection (Determines which fields to show)
+    role = st.selectbox("Select Role", ["Student", "Teacher", "Staff"])
     
-    st.markdown("---")
-    st.info("📷 Photo Setup")
+    # 2. Dynamic Input Fields
+    col1, col2 = st.columns(2)
+    
+    # --- COMMON FIELDS (Everyone has these) ---
+    with col1:
+        name = st.text_input("Full Name")
+        gender = st.selectbox("Gender", ["Male", "Female", "Other"])
+        mobile = st.text_input("Mobile Number")
+        
+    with col2:
+        # SYSTEM ID: Crucial for Face Recognition (Must be Number)
+        system_id = st.number_input("System ID (Numeric Only)", min_value=1, step=1, help="Unique number for Face System")
+        address = st.text_area("Address", height=100)
 
-    # 2. Camera Controls (State Management)
-    # We use a specific key 'reg_camera_active' so it doesn't conflict with Tab 2
+    st.markdown("---")
+    
+    # --- ROLE SPECIFIC FIELDS ---
+    guardian_name = ""
+    student_class = ""
+    blood_group = ""
+    official_id = "" # Roll No or Staff ID
+    subject = ""
+    
+    if role == "Student":
+        st.subheader("🎓 Student Details")
+        c_s1, c_s2 = st.columns(2)
+        with c_s1:
+            official_id = st.text_input("Roll Number")
+            student_class = st.text_input("Class / Standard")
+        with c_s2:
+            guardian_name = st.text_input("Guardian / Father's Name")
+            blood_group = st.selectbox("Blood Group", ["A+", "A-", "B+", "B-", "O+", "O-", "AB+", "AB-"])
+            
+    elif role == "Teacher":
+        st.subheader("👨‍🏫 Teacher Details")
+        c_t1, c_t2 = st.columns(2)
+        with c_t1:
+            official_id = st.text_input("Teacher ID (Official)")
+        with c_t2:
+            subject = st.text_input("Subject / Designation")
+            
+    elif role == "Staff":
+        st.subheader("🛠️ Staff Details")
+        official_id = st.text_input("Staff ID")
+
+    st.markdown("---")
+    st.info("📷 Photo Setup (Required for Face ID)")
+
+    # 3. CAMERA CONTROLS (Preserved from previous version)
     if 'reg_camera_active' not in st.session_state:
         st.session_state.reg_camera_active = False
 
     col_cam1, col_cam2 = st.columns(2)
-    
     with col_cam1:
-        # Start/Stop Button
+        # Start/Stop
         if st.button("🔴 Stop Camera" if st.session_state.reg_camera_active else "📷 Start Camera", key="reg_cam_toggle"):
             st.session_state.reg_camera_active = not st.session_state.reg_camera_active
             st.rerun()
 
     with col_cam2:
-        # Switch/Reset Button
+        # Switch Camera
         if st.session_state.reg_camera_active:
             if st.button("🔄 Switch Camera", key="reg_cam_switch"):
                 st.session_state.reg_camera_active = False
                 st.rerun()
 
-    # 3. The Camera Input
+    # 4. Camera Input
     img_file = None
     if st.session_state.reg_camera_active:
         img_file = st.camera_input("Take Photo", key="reg_camera", label_visibility="collapsed")
-    else:
-        st.caption("Camera is OFF. Click 'Start Camera' to begin.")
 
     st.markdown("---")
 
-    # 4. Save Button (Acting as the form submit)
-    # We check if name + ID + image exists before allowing save
-    if st.button("💾 Save Member Registration", type="primary"):
-        if name and user_id and img_file:
+    # 5. SAVE LOGIC
+    if st.button("💾 Save Registration", type="primary"):
+        if name and system_id and img_file:
             try:
-                # Face Detection Logic
                 face_roi, _ = detect_face(img_file)
                 
                 if face_roi is not None:
                     df = load_data()
                     
-                    # Check for duplicate ID
-                    if user_id in df['ID'].values:
-                        st.error(f"⚠️ Error: ID {user_id} is already registered!")
+                    if system_id in df['SystemID'].values:
+                        st.error(f"⚠️ System ID {system_id} is already taken! Please use a different one.")
                     else:
-                        # Save Data
-                        new_entry = pd.DataFrame([{"ID": user_id, "Name": name, "Role": role, "LastAttendance": "Never"}])
+                        # Construct Data Row
+                        new_data = {
+                            "SystemID": system_id,
+                            "Name": name,
+                            "Role": role,
+                            "Gender": gender,
+                            "Mobile": mobile,
+                            "Address": address,
+                            "GuardianName": guardian_name if role == "Student" else "N/A",
+                            "Class": student_class if role == "Student" else "N/A",
+                            "BloodGroup": blood_group if role == "Student" else "N/A",
+                            "OfficialID": official_id, # Stores Roll No or Staff ID
+                            "Subject": subject if role == "Teacher" else "N/A",
+                            "LastAttendance": "Never"
+                        }
+                        
+                        # Save to CSV
+                        new_entry = pd.DataFrame([new_data])
                         df = pd.concat([df, new_entry], ignore_index=True)
                         save_data(df)
                         
-                        # Train Model
+                        # Train Face Model
                         if os.path.exists(TRAINER_FILE):
                             recognizer.read(TRAINER_FILE)
-                        
-                        recognizer.update([face_roi], np.array([user_id]))
+                        recognizer.update([face_roi], np.array([system_id]))
                         recognizer.write(TRAINER_FILE)
                         
                         st.balloons()
-                        st.success(f"✅ Successfully Registered: {name}")
-                        
-                        # Optional: Turn off camera after success to save resources
+                        st.success(f"✅ Registered {name} ({role})")
                         st.session_state.reg_camera_active = False
                         st.rerun()
                 else:
-                    st.error("⚠️ No face detected in the photo. Please try again.")
+                    st.error("⚠️ No face detected. Please ensure good lighting.")
             except Exception as e:
                 st.error(f"Error: {e}")
         else:
-            st.warning("⚠️ Please fill in Name, ID, and Capture a Photo.")
+            st.warning("⚠️ Please fill in Name, System ID, and take a Photo.")
             
 # --- TAB 2: ATTENDANCE ---
 with tab2:
