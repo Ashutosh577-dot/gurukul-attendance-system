@@ -220,7 +220,24 @@ with tab2:
 with tab3:
     if is_admin:
         st.header("Database")
-        df = load_data()
-        st.dataframe(df)
+       def load_data():
+    # Define all possible columns we might need
+    columns = [
+        "SystemID", "Name", "Role", "Gender", "Mobile", "Address", 
+        "GuardianName", "Class", "BloodGroup", "OfficialID", 
+        "Subject", "LastAttendance"
+    ]
+    
+    if not os.path.exists(DB_FILE):
+        return pd.DataFrame(columns=columns)
+    
+    df = pd.read_csv(DB_FILE)
+    
+    # Safety: If the CSV exists but has old columns, add the new missing ones
+    for col in columns:
+        if col not in df.columns:
+            df[col] = "" # Fill missing columns with empty string
+            
+    return df
     else:
         st.warning("Admin Access Required")
