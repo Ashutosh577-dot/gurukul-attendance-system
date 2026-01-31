@@ -7,3 +7,5 @@ qrcode
 fpdf
 gspread
 oauth2client
+matplotlib
+seaborn
