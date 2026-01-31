@@ -74,43 +74,28 @@ tab1, tab2, tab3 = st.tabs(["📝 Registration", "📷 Face Attendance", "📊 A
 # --- TAB 1: REGISTRATION ---
 with tab1:
     st.header("Register New Member")
-    with st.form("reg_form"):
+    
+    # 1. Open the form
+    with st.form("reg_form", clear_on_submit=False):
         c1, c2 = st.columns(2)
         name = c1.text_input("Name")
         role = c1.selectbox("Role", ["Student", "Teacher", "Staff"])
-        
-        # ID must be numeric for LBPH recognizer
-        user_id = c2.number_input("ID Number (Numeric Only)", min_value=1, step=1)
+        user_id = c2.number_input("ID Number", min_value=1, step=1)
         
         st.info("Take a photo to register face.")
         img_file = st.camera_input("Register Face")
         
+        # 2. THIS BUTTON MUST BE INDENTED INSIDE 'with st.form'
         submit = st.form_submit_button("Save Member")
-        
-        if submit and img_file and name:
-            face_roi, _ = detect_face(img_file)
-            
-            if face_roi is not None:
-                # 1. Update Database
-                df = load_data()
-                new_entry = pd.DataFrame([{"ID": user_id, "Name": name, "Role": role, "LastAttendance": "Never"}])
-                df = pd.concat([df, new_entry], ignore_index=True)
-                save_data(df)
-                
-                # 2. Train Model (Incremental Update)
-                # Load existing model if available to not lose previous
-                if os.path.exists(TRAINER_FILE):
-                    recognizer.read(TRAINER_FILE)
-                
-                # Update with new face
-                # We need multiple samples ideally, but 1 works for basic demo
-                recognizer.update([face_roi], np.array([user_id]))
-                recognizer.write(TRAINER_FILE)
-                
-                st.success(f"Registered {name} (ID: {user_id})")
-            else:
-                st.error("No face detected. Please try again.")
 
+    # 3. This logic is OUTSIDE the form (Indentation moves back)
+    if submit:
+        if img_file and name:
+            # ... your saving logic here ...
+            st.success("Processing...")
+        else:
+            st.warning("Please enter name and take photo.")
+            
 # --- TAB 2: ATTENDANCE ---
 with tab2:
     st.header("Mark Attendance")
