@@ -8,8 +8,13 @@ from fpdf import FPDF
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import time
+import io
 
-# Optional: Import plotting libraries for analytics (Add matplotlib/seaborn to requirements.txt)
+# --- GOOGLE DRIVE IMPORTS (ADDED FOR CLOUD BRAIN) ---
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
+
+# Optional: Import plotting libraries for analytics
 try:
     import matplotlib.pyplot as plt
     import seaborn as sns
@@ -47,7 +52,73 @@ TAB_TEACHERS = "Teachers"
 TAB_STAFF = "Staff"
 
 # ======================================================
-# 2. ADVANCED DATABASE MANAGER CLASS
+# 2. DRIVE MANAGER (NEW: PREVENTS DATA LOSS ON SLEEP)
+# ======================================================
+class DriveManager:
+    """
+    Handles backing up the 'trainer.yml' file to Google Drive.
+    This fixes the issue where face data is lost when the app sleeps.
+    """
+    def __init__(self):
+        # We reuse the same credentials file
+        self.scope = ['https://www.googleapis.com/auth/drive']
+        try:
+            self.creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_FILE, self.scope)
+            self.service = build('drive', 'v3', credentials=self.creds)
+        except Exception as e:
+            st.error(f"Drive Init Error: {e}")
+
+    def upload_brain(self):
+        """Uploads trainer.yml to Google Drive (Overwrites if exists)."""
+        if not os.path.exists(TRAINER_FILE): return False
+        
+        try:
+            # Check if file already exists
+            results = self.service.files().list(q="name='trainer.yml' and trashed=false").execute()
+            items = results.get('files', [])
+
+            file_metadata = {'name': 'trainer.yml'}
+            media = MediaFileUpload(TRAINER_FILE, mimetype='application/x-yaml')
+
+            if not items:
+                # Create new
+                self.service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+            else:
+                # Update existing
+                file_id = items[0]['id']
+                self.service.files().update(fileId=file_id, media_body=media).execute()
+            print("Brain Uploaded to Cloud ✅")
+            return True
+        except Exception as e:
+            print(f"Cloud Backup Failed: {e}")
+            return False
+
+    def download_brain(self):
+        """Downloads trainer.yml from Drive on startup."""
+        try:
+            results = self.service.files().list(q="name='trainer.yml' and trashed=false").execute()
+            items = results.get('files', [])
+
+            if items:
+                file_id = items[0]['id']
+                request = self.service.files().get_media(fileId=file_id)
+                fh = io.BytesIO()
+                downloader = MediaIoBaseDownload(fh, request)
+                done = False
+                while done is False:
+                    status, done = downloader.next_chunk()
+                
+                with open(TRAINER_FILE, "wb") as f:
+                    f.write(fh.getbuffer())
+                print("Brain Restored from Cloud ✅")
+                return True
+            return False 
+        except Exception as e:
+            print(f"Cloud Restore Failed: {e}")
+            return False
+
+# ======================================================
+# 3. ADVANCED DATABASE MANAGER CLASS
 # ======================================================
 class DatabaseManager:
     """
@@ -185,14 +256,21 @@ class DatabaseManager:
         return False
 
 # ======================================================
-# 3. FACE DETECTION ENGINE
+# 4. FACE DETECTION ENGINE (INTEGRATED WITH DRIVE)
 # ======================================================
 class FaceEngine:
     def __init__(self):
         self.cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
         self.recognizer = cv2.face.LBPHFaceRecognizer_create()
+        self.drive_mgr = DriveManager() # Init Cloud Backup
+        
+        # LOGIC: Check Local -> If Missing, Check Cloud -> Load
         if os.path.exists(TRAINER_FILE):
             self.recognizer.read(TRAINER_FILE)
+        else:
+            # Try Restoring from Cloud if app restarted
+            if self.drive_mgr.download_brain():
+                self.recognizer.read(TRAINER_FILE)
 
     def detect(self, image_buffer):
         """Optimized detection for mobile/webcam."""
@@ -214,19 +292,24 @@ class FaceEngine:
             return None, None
 
     def train(self, face_roi, label_id):
-        """Updates the LBPH model."""
+        """Updates the LBPH model and Backs up to Cloud."""
         try:
+            # 1. Update Local Model
             if os.path.exists(TRAINER_FILE):
                 self.recognizer.read(TRAINER_FILE)
             self.recognizer.update([face_roi], np.array([label_id]))
             self.recognizer.write(TRAINER_FILE)
+            
+            # 2. Sync to Google Drive (Prevent Data Loss)
+            self.drive_mgr.upload_brain()
+            
             return True
         except Exception as e:
             st.error(f"Training Error: {e}")
             return False
 
 # ======================================================
-# 4. ADVANCED REPORT GENERATOR
+# 5. ADVANCED REPORT GENERATOR
 # ======================================================
 class ReportGenerator(FPDF):
     """Custom PDF Generator with Headers, Footers, and Dynamic Titles."""
@@ -276,12 +359,12 @@ class ReportGenerator(FPDF):
         self.ln()
 
 # ======================================================
-# 5. UI COMPONENTS
+# 6. UI COMPONENTS
 # ======================================================
 
 # --- Init Logic ---
 db = DatabaseManager()
-face_engine = FaceEngine()
+face_engine = FaceEngine() # This triggers cloud download if needed
 
 # --- CSS Styling ---
 st.markdown("""
@@ -405,6 +488,7 @@ with t1:
                             
                             # Save
                             if db.save_record(role_type, data):
+                                # Train AND SYNC to Drive
                                 face_engine.train(roi, sys_id)
                                 st.balloons()
                                 st.success(f"✅ Registered {name} (ID: {sys_id})")
