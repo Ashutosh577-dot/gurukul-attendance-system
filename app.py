@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 import os
 from datetime import datetime
+from fpdf import FPDF
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="Gurukulam Manager", page_icon="🕉️", layout="wide")
@@ -11,7 +12,7 @@ st.set_page_config(page_title="Gurukulam Manager", page_icon="🕉️", layout="
 # --- FILE PATHS ---
 DB_FILE = "gurukulam_data.csv"
 TRAINER_FILE = "trainer.yml"
-ADMIN_PASSWORD = "Gurukulam@admin"  # Updated Password
+ADMIN_PASSWORD = "Gurukulam@admin"  # Password set here
 
 # --- INIT FACE RECOGNIZER ---
 recognizer = cv2.face.LBPHFaceRecognizer_create()
@@ -64,7 +65,6 @@ with st.sidebar:
     st.markdown("---")
     
     st.markdown("### 🔐 Admin Login")
-    st.caption("Required for Registration Tab only")
     input_pass = st.text_input("Enter Password", type="password", key="sidebar_pass")
     
     is_admin = input_pass == ADMIN_PASSWORD
@@ -132,7 +132,7 @@ with tab1:
         st.markdown("---")
         st.info("📷 Photo Setup")
 
-        # Camera Controls (Only visible if Admin)
+        # Camera Controls
         if 'reg_camera_active' not in st.session_state:
             st.session_state.reg_camera_active = False
 
@@ -188,8 +188,7 @@ with tab1:
             else:
                 st.warning("⚠️ Fill Name, ID & Photo.")
     else:
-        st.warning("🔒 This section is protected. Please enter the Admin Password in the Sidebar.")
-        st.info("Tip: The password is 'Gurukulam@admin'")
+        st.warning("🔒 This section is protected. Enter Admin Password in Sidebar.")
 
 # ==========================================
 # TAB 2: ATTENDANCE (OPEN)
@@ -240,15 +239,15 @@ with tab2:
                 st.error("⚠️ Database empty.")
 
 # ==========================================
-# TAB 3: ANALYTICS (UNLOCKED 🔓)
+# TAB 3: ANALYTICS (UNLOCKED + PDF REPORT)
 # ==========================================
 with tab3:
-    # Removed "if is_admin" check as requested
     st.header("Gurukulam Analytics (Public View)")
     
     df = load_data()
     
     if not df.empty:
+        # 1. METRICS
         total = len(df)
         students = len(df[df['Role'] == 'Student'])
         teachers = len(df[df['Role'] == 'Teacher'])
@@ -263,10 +262,76 @@ with tab3:
         st.markdown("### 📋 Database Records")
         st.dataframe(df)
         
-        @st.cache_data
-        def convert_df(df): return df.to_csv(index=False).encode('utf-8')
-        csv = convert_df(df)
+        # 2. PDF GENERATION FUNCTION
+        def create_pdf(dataframe):
+            class PDF(FPDF):
+                def header(self):
+                    # A. LOGO (Centered, Above the Red Box)
+                    # We check if logo.png exists to avoid crash
+                    if os.path.exists("logo.png"):
+                        # image(path, x, y, width)
+                        self.image("logo.png", x=90, y=10, w=30) 
+                        self.ln(35) # Move down below logo
+                    else:
+                        self.ln(10) # Just move down if no logo
+                    
+                    # B. RED BOX WITH NAME
+                    self.set_fill_color(200, 0, 0) # Red Color (RGB)
+                    self.set_text_color(255, 255, 255) # White Text
+                    self.set_font('Arial', 'B', 14)
+                    # Cell(width, height, text, border, ln, align, fill)
+                    self.cell(0, 15, 'Shri Hulas Bramh Baba Sanskrit Ved Gurukulam', 0, 1, 'C', True)
+                    self.ln(10) # Space after header
+                    
+                    # C. Table Headers
+                    self.set_text_color(0, 0, 0) # Black Text
+                    self.set_font('Arial', 'B', 10)
+                    self.cell(40, 10, 'Name', 1)
+                    self.cell(30, 10, 'Role', 1)
+                    self.cell(30, 10, 'System ID', 1)
+                    self.cell(50, 10, 'Last Attendance', 1)
+                    self.ln()
+
+                def footer(self):
+                    self.set_y(-15)
+                    self.set_font('Arial', 'I', 8)
+                    self.cell(0, 10, f'Page {self.page_no()}', 0, 0, 'C')
+
+            # Create PDF Object
+            pdf = PDF()
+            pdf.add_page()
+            pdf.set_font('Arial', '', 10)
+            
+            # D. Add Rows from Dataframe
+            # We iterate through the dataframe and add only key columns to fit page
+            for index, row in dataframe.iterrows():
+                # Truncate name if too long to prevent layout break
+                name_txt = str(row['Name'])[:20] 
+                role_txt = str(row['Role'])
+                id_txt = str(row['SystemID'])
+                time_txt = str(row['LastAttendance'])
+                
+                pdf.cell(40, 10, name_txt, 1)
+                pdf.cell(30, 10, role_txt, 1)
+                pdf.cell(30, 10, id_txt, 1)
+                pdf.cell(50, 10, time_txt, 1)
+                pdf.ln()
+                
+            return pdf.output(dest='S').encode('latin-1')
+
+        # 3. DOWNLOAD BUTTONS
+        col_d1, col_d2 = st.columns(2)
         
-        st.download_button("📥 Download CSV", data=csv, file_name="Gurukulam_Data.csv", mime="text/csv")
+        # CSV Button
+        csv = df.to_csv(index=False).encode('utf-8')
+        col_d1.download_button("📥 Download CSV (Excel)", data=csv, file_name="Gurukulam_Data.csv", mime="text/csv")
+        
+        # PDF Button
+        try:
+            pdf_bytes = create_pdf(df)
+            col_d2.download_button("📄 Download PDF Report", data=pdf_bytes, file_name="Gurukulam_Report.pdf", mime="application/pdf")
+        except Exception as e:
+            col_d2.error(f"Error generating PDF: {e}")
+
     else:
         st.info("No data available yet.")
