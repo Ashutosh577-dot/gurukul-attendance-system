@@ -5,3 +5,5 @@ opencv-contrib-python-headless
 openpyxl
 qrcode
 fpdf
+gspread
+oauth2client
