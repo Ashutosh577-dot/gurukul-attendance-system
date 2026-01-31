@@ -99,36 +99,65 @@ with tab1:
 # --- TAB 2: ATTENDANCE ---
 with tab2:
     st.header("Mark Attendance")
-    cam = st.camera_input("Scan Face", key="attendance")
     
-    if cam:
-        if os.path.exists(TRAINER_FILE):
-            recognizer.read(TRAINER_FILE)
-            face_roi, _ = detect_face(cam)
-            
-            if face_roi is not None:
-                # Predict
-                id_predicted, confidence = recognizer.predict(face_roi)
-                
-                # Confidence: Lower is better in OpenCV LBPH (0 = perfect match)
-                # Usually < 60 is a good match
-                if confidence < 70:
-                    df = load_data()
-                    user = df[df['ID'] == id_predicted]
-                    if not user.empty:
-                        name = user.iloc[0]['Name']
-                        role = user.iloc[0]['Role']
-                        st.balloons()
-                        st.success(f"Attendance Marked: {name} ({role})")
-                        st.info(f"Confidence Score: {round(100 - confidence)}%")
+    # 1. Initialize State
+    if 'camera_active' not in st.session_state:
+        st.session_state.camera_active = False
+
+    # 2. Controls
+    col_cam1, col_cam2 = st.columns(2)
+    
+    with col_cam1:
+        # Main ON/OFF Switch
+        if st.button("🔴 Stop Camera" if st.session_state.camera_active else "📷 Start Camera"):
+            st.session_state.camera_active = not st.session_state.camera_active
+            st.rerun()
+
+    with col_cam2:
+        # "Flip" Logic: We actually just clear the key to force a reset
+        if st.session_state.camera_active:
+            if st.button("🔄 Switch Camera"):
+                # This clears the widget, forcing the browser to ask for camera permission again
+                # enabling the user to select 'Back Camera' on their phone.
+                st.session_state.camera_active = False
+                st.rerun()
+
+    # 3. Camera Logic
+    if st.session_state.camera_active:
+        st.write("Scan Face below:")
+        
+        # We add a unique key based on time to ensure it reloads cleanly if needed
+        attendance_cam = st.camera_input("Attendance Scanner", label_visibility="collapsed")
+        
+        if attendance_cam:
+            if os.path.exists(TRAINER_FILE):
+                try:
+                    recognizer.read(TRAINER_FILE)
+                    face_roi, _ = detect_face(attendance_cam)
+                    
+                    if face_roi is not None:
+                        id_predicted, confidence = recognizer.predict(face_roi)
+                        
+                        if confidence < 75:  # Slightly looser tolerance for mobile cameras
+                            df = load_data()
+                            user = df[df['ID'] == id_predicted]
+                            if not user.empty:
+                                name = user.iloc[0]['Name']
+                                role = user.iloc[0]['Role']
+                                st.success(f"✅ Present: {name} ({role})")
+                                st.balloons()
+                            else:
+                                st.warning(f"ID {id_predicted} found but no name attached.")
+                        else:
+                            st.error("❌ Face not matched.")
                     else:
-                        st.warning(f"Face recognized as ID {id_predicted}, but ID not found in CSV.")
-                else:
-                    st.error("Face not recognized. Please register.")
+                        st.warning("⚠️ Face not clear.")
+                except Exception as e:
+                    st.error(f"Error: {e}")
             else:
-                st.error("No face found in frame.")
-        else:
-            st.error("System has no registered faces yet.")
+                st.error("⚠️ Database empty.")
+    else:
+        st.info("Tap 'Start Camera' to begin.")
 
 # --- TAB 3: ANALYTICS ---
 with tab3:
