@@ -1,0 +1,7 @@
+streamlit
+streamlit-gsheets-connection
+streamlit-qr-scanner
+pandas
+segno
+reportlab
+plotly
