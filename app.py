@@ -3,156 +3,159 @@ from streamlit_gsheets import GSheetsConnection
 from streamlit_qr_scanner import streamlit_qr_scanner
 import pandas as pd
 import segno
-import plotly.express as px
+import base64
 from datetime import datetime
 from io import BytesIO
+from PIL import Image, ImageDraw, ImageFont
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
-from reportlab.lib import colors
-from reportlab.platypus import Table, TableStyle
 
 # --- 1. SETTINGS & BRANDING ---
-st.set_page_config(
-    page_title="Gurukulam Attendance System",
-    page_icon="🕉️",
-    layout="wide"
-)
-
-APP_NAME = "Gurukulam Attendance System"
+st.set_page_config(page_title="Gurukulam Attendance System", page_icon="🕉️", layout="wide")
 ADMIN_PASSWORD = "Gurukulam@admin"
+GURUKULAM_NAME = "Sri Gurukulam Educational Trust"
 
-# Initialize Connection
+# Initialize Google Sheets Connection
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# --- 2. CORE UTILITIES ---
+# --- 2. TRADITIONAL GURUKULAM CSS ---
+st.markdown("""
+    <style>
+        .stApp { background-color: #FFF8E1; color: #5D4037; }
+        [data-testid="stSidebar"] { background-image: linear-gradient(#FF9933, #FF8000); border-right: 5px solid #FFD700; }
+        [data-testid="stSidebar"] * { color: white !important; font-family: 'Georgia', serif; }
+        h1, h2, h3 { color: #8B0000 !important; text-align: center; font-family: 'Times New Roman', serif; }
+        div.stButton > button:first-child { 
+            background-color: #FFD700; color: #8B0000; border: 2px solid #8B0000; 
+            border-radius: 5px; font-weight: bold; width: 100%;
+        }
+        div.stButton > button:hover { background-color: #8B0000; color: #FFD700; }
+        .stAlert { background-color: #FFECB3; border: 1px solid #FFBF00; color: #8B4513; }
+    </style>
+    """, unsafe_allow_html=True)
 
-def log_audit(action, details):
-    """Logs administrative and system actions."""
+# --- 3. CORE LOGIC FUNCTIONS ---
+
+def generate_complete_id_card(row_data):
+    """Generates an ornate physical ID card for printing."""
+    qr = segno.make(row_data['ID'], error='h')
+    qr_buf = BytesIO()
+    qr.save(qr_buf, kind='png', scale=6, border=0)
+    qr_img = Image.open(qr_buf).convert("RGBA")
+
     try:
-        audit_entry = pd.DataFrame([{
-            "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "Action": action,
-            "Details": details
-        }])
-        conn.append(data=audit_entry, worksheet="Audit")
-    except Exception as e:
-        st.error(f"Audit failure: {e}")
+        bg_img = Image.open("qr_bg.png").convert("RGBA") # Ensure this is in your GitHub repo
+        draw = ImageDraw.Draw(bg_img)
+        # Text settings
+        text_color = (139, 69, 19) 
+        draw.text((50, 400), f"Name: {row_data['Name']}", fill=text_color)
+        draw.text((50, 460), f"ID: {row_data['ID']}", fill=text_color)
+        draw.text((50, 510), f"Class: {row_data.get('Department', 'N/A')}", fill=text_color)
+        draw.text((50, 560), f"Blood: {row_data['Blood']}", fill=(178, 0, 0))
+        draw.text((50, 610), f"Guardian: {row_data['Guardian']}", fill=text_color)
 
-def create_pdf_archive(df):
-    """Generates an official PDF with watermarks."""
-    buffer = BytesIO()
-    p = canvas.Canvas(buffer, pagesize=A4)
-    w, h = A4
-    
-    # Watermark
-    p.saveState()
-    p.setFont("Helvetica-Bold", 60)
-    p.setStrokeColorRGB(0.9, 0.9, 0.9)
-    p.setFillColorRGB(0.9, 0.9, 0.9)
-    p.translate(w/2, h/2)
-    p.rotate(45)
-    p.drawCentredString(0, 0, "GURUKULAM OFFICIAL")
-    p.restoreState()
-    
-    # Header
-    p.setFont("Helvetica-Bold", 16)
-    p.drawCentredString(w/2, h - 50, APP_NAME)
-    p.setFont("Helvetica", 10)
-    p.drawCentredString(w/2, h - 70, f"Generated on: {datetime.now().strftime('%Y-%m-%d')}")
-    
-    p.showPage()
-    p.save()
-    return buffer.getvalue()
+        # Paste QR
+        bg_w, bg_h = bg_img.size
+        offset = ((bg_w - qr_img.size[0]) // 2, bg_h - qr_img.size[1] - 50)
+        bg_img.paste(qr_img, offset, qr_img)
+        
+        final_buf = BytesIO()
+        bg_img.save(final_buf, format="PNG")
+        return final_buf
+    except:
+        return qr_buf
 
-# --- 3. NAVIGATION ---
-st.sidebar.title(f"🕉️ {APP_NAME}")
-menu = ["Gate Entry (QR)", "Register User", "Leave Management", "Admin & Archives"]
-choice = st.sidebar.radio("Navigate", menu)
+# --- 4. NAVIGATION ---
+st.sidebar.markdown("<h1 style='font-size: 40px;'>🕉️</h1>", unsafe_allow_html=True)
+choice = st.sidebar.radio("Navigation", ["Student Attendance", "New Registration", "Teacher Dashboard", "Admin Archives"])
 
-# --- 4. MODULES ---
+# --- 5. MODULES ---
 
-# MODULE 1: GATE ENTRY
-if choice == "Gate Entry (QR)":
-    st.header("📸 QR Attendance Scanner")
-    qr_code = streamlit_qr_scanner(key='gate_scanner')
+# MODULE: STUDENT SELF-ATTENDANCE
+if choice == "Student Attendance":
+    st.markdown("<h1>🙏 Swagatam - Daily Attendance</h1>", unsafe_allow_html=True)
+    st.info("Students: Please scan your ID card below.")
     
-    if qr_code:
-        st.success(f"ID Detected: {qr_code}")
-        if st.button("Confirm Entry"):
-            entry = pd.DataFrame([{
+    scanned_id = streamlit_qr_scanner(key="gate_scan")
+    if scanned_id:
+        students_df = conn.read(worksheet="Students")
+        student = students_df[students_df['ID'] == scanned_id]
+        
+        if not student.empty:
+            s_name = student.iloc[0]['Name']
+            st.success(f"Verified: {s_name}")
+            
+            # Log Attendance
+            att_entry = pd.DataFrame([{
                 "Date": datetime.now().strftime("%Y-%m-%d"),
-                "ID": qr_code,
+                "ID": scanned_id,
+                "Name": s_name,
                 "Time": datetime.now().strftime("%H:%M:%S"),
                 "Status": "Present"
             }])
-            conn.append(data=entry, worksheet="Attendance")
+            conn.append(data=att_entry, worksheet="Attendance")
             st.balloons()
-            st.toast("Attendance Logged Successfully")
+        else:
+            st.error("ID Not Recognized. Please see the Acharya.")
 
-# MODULE 2: REGISTRATION
-elif choice == "Register User":
-    st.header("📝 User Registration")
-    pwd = st.text_input("Admin Password", type="password")
-    
+# MODULE: REGISTRATION
+elif choice == "New Registration":
+    st.header("📝 Register New Student/Staff")
+    pwd = st.sidebar.text_input("Admin Password", type="password")
     if pwd == ADMIN_PASSWORD:
         with st.form("reg_form"):
-            col1, col2 = st.columns(2)
-            role = col1.selectbox("Role", ["Student", "Teacher", "Staff"])
-            name = col1.text_input("Name")
-            u_id = col2.text_input("ID / Roll No")
-            mob = col2.text_input("Mobile No")
-            
-            blood = col1.selectbox("Blood Group", ["A+", "B+", "O+", "AB+", "A-", "B-", "O-", "AB-"])
+            role = st.selectbox("Role", ["Student", "Teacher", "Staff"])
+            name = st.text_input("Full Name")
+            u_id = st.text_input("ID / Roll No")
+            blood = st.selectbox("Blood Group", ["A+", "B+", "O+", "AB+", "A-", "B-", "O-", "AB-"])
+            guardian = st.text_input("Guardian Name")
+            dept = st.text_input("Department / Class")
             addr = st.text_area("Address")
             
-            # Role Specific logic
-            guardian = st.text_input("Guardian Name") if role == "Student" else ""
-            spec = st.text_input("Specialization") if role == "Teacher" else ""
-            job = st.text_input("Job Title") if role == "Staff" else ""
-            
-            if st.form_submit_button("Register"):
-                reg_df = pd.DataFrame([{
-                    "Name": name, "ID": u_id, "Mobile": mob, "Blood": blood, 
-                    "Address": addr, "Guardian": guardian, "Specialization": spec, "Job": job
+            if st.form_submit_button("Register & Generate ID"):
+                reg_data = pd.DataFrame([{
+                    "Name": name, "ID": u_id, "Blood": blood, 
+                    "Guardian": guardian, "Department": dept, "Address": addr
                 }])
-                conn.append(data=reg_df, worksheet=f"{role}s")
+                conn.append(data=reg_data, worksheet=f"{role}s")
+                st.success("Registration Successful!")
                 
-                # Show QR for the new user
-                qr = segno.make(u_id)
-                buf = BytesIO()
-                qr.save(buf, kind='png', scale=10)
-                st.image(buf, caption=f"ID QR for {name}")
-                st.download_button("Download QR", buf.getvalue(), f"{u_id}.png")
-                log_audit("Register", f"Added {role}: {u_id}")
+                # Show ID Card
+                id_card = generate_complete_id_card(reg_data.iloc[0].to_dict())
+                st.image(id_card)
+                st.download_button("Download Print-Ready ID", id_card.getvalue(), f"{u_id}.png")
 
-# MODULE 3: LEAVE
-elif choice == "Leave Management":
-    st.header("📅 Leave Requests")
-    with st.form("leave_req"):
-        l_id = st.text_input("Your ID")
-        reason = st.text_area("Reason")
-        if st.form_submit_button("Submit"):
-            l_df = pd.DataFrame([{"ID": l_id, "Reason": reason, "Status": "Pending"}])
-            conn.append(data=l_df, worksheet="Leave_Requests")
-            st.success("Submitted.")
-
-# MODULE 4: ADMIN
-elif choice == "Admin & Archives":
-    st.header("📊 Administration")
-    pwd = st.text_input("Password", type="password")
+# MODULE: TEACHER DASHBOARD
+elif choice == "Teacher Dashboard":
+    st.header("📋 Daily Absence Report")
+    pwd = st.sidebar.text_input("Admin Password", type="password")
     if pwd == ADMIN_PASSWORD:
-        att_data = conn.read(worksheet="Attendance")
-        st.dataframe(att_data)
+        today = datetime.now().strftime("%Y-%m-%d")
+        students = conn.read(worksheet="Students")
+        attendance = conn.read(worksheet="Attendance")
         
-        # Archiving
-        if st.button("Yearly Archive & Clear Logs"):
-            archive_sheet = f"Archive_{datetime.now().year}"
-            conn.create(data=att_data, worksheet=archive_sheet)
-            # Clear logic - update with empty df
-            conn.update(data=pd.DataFrame(columns=att_data.columns), worksheet="Attendance")
-            st.success("Archived to Google Sheets.")
-            log_audit("Archive", "Full System Archive Run")
+        present_ids = attendance[attendance['Date'] == today]['ID'].tolist()
+        absent_students = students[~students['ID'].isin(present_ids)]
+        
+        st.metric("Present Today", len(present_ids))
+        if not absent_students.empty:
+            st.warning("Absentees for Today:")
+            st.table(absent_students[['ID', 'Name', 'Guardian']])
+        else:
+            st.success("All students are present!")
+
+# MODULE: ADMIN
+elif choice == "Admin Archives":
+    st.header("⚙️ Data Management")
+    pwd = st.sidebar.text_input("Admin Password", type="password")
+    if pwd == ADMIN_PASSWORD:
+        st.subheader("Historical Attendance")
+        data = conn.read(worksheet="Attendance")
+        st.dataframe(data)
+        
+        if st.button("Archive & Reset Yearly Logs"):
+            archive_name = f"Archive_{datetime.now().year}"
+            conn.create(data=data, worksheet=archive_name)
+            conn.update(data=pd.DataFrame(columns=data.columns), worksheet="Attendance")
+            st.success("Yearly logs archived successfully.")
             
-        # PDF Report
-        pdf_bytes = create_pdf_archive(att_data)
-        st.download_button("Download PDF Report", pdf_bytes, "Report.pdf")
