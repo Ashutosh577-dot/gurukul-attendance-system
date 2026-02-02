@@ -1,5 +1,5 @@
 import streamlit as st
-from streamlit_gsheets import GSheetsConnection
+from st_gsheets_connection import GSheetsConnection
 from streamlit_qr_scanner import streamlit_qr_scanner
 import pandas as pd
 import segno
