@@ -3,5 +3,5 @@ streamlit-gsheets-connection
 streamlit-qr-scanner
 pandas
 segno
+Pillow
 reportlab
-plotly
