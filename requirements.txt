@@ -1,7 +1,8 @@
-streamlit
-streamlit-gsheets-connection
+streamlit>=1.30.0
+st-gsheets-connection==0.0.3
 streamlit-qr-scanner
 pandas
 segno
 Pillow
 reportlab
+plotly
